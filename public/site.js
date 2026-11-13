@@ -81,6 +81,14 @@ function renderDonation() {
   observeReveals();
 }
 
+function renderDonationOrder(order, canIssue = false, issuing = false) {
+  const status = order.status === 'completed' ? 'Статус выдан' : 'Ожидает подтверждения';
+  const issueButton = canIssue && order.status === 'pending'
+    ? `<button class="text-button" type="button" data-donation-issue="${escapeHtml(order.id)}" ${issuing ? '' : 'disabled'}>${issuing ? 'Подтвердить оплату и выдать' : 'Выдача закрыта'}</button>`
+    : '';
+  return `<article class="donation-order"><div class="donation-order-head"><div><strong>${escapeHtml(order.username || order.packageName)}</strong><span>${escapeHtml(order.packageName)} · ${Number(order.amount)} ₽ · ${status}</span></div><div class="donation-order-actions"><button class="text-button" type="button" data-chat-toggle="${escapeHtml(order.id)}">Переписка</button>${issueButton}</div></div><div class="donation-chat" id="donation-chat-${escapeHtml(order.id)}" hidden></div></article>`;
+}
+
 function renderAccount() {
   const accountArea = byId('account-area');
   const adminArea = byId('admin-area');
@@ -94,8 +102,8 @@ function renderAccount() {
   accountArea.hidden = false;
   accountTrigger.textContent = state.user.username;
   byId('account-title').textContent = state.user.username.toUpperCase();
-  const orders = (state.donationOrders || []).map(order => `<div class="order-row"><span>${escapeHtml(order.packageName)} · ${Number(order.amount)} ₽</span><span class="order-status ${order.status === 'completed' ? 'completed' : ''}">${order.status === 'completed' ? 'Статус выдан' : 'Заявка ожидает обработки'}</span></div>`).join('');
-  byId('account-content').innerHTML = `<div class="profile-strip"><strong>${escapeHtml(state.user.username)}</strong><span class="profile-role">${escapeHtml(roleLabel(state.user.role))}</span><span class="profile-stat">С нами с ${new Date(state.user.createdAt).toLocaleDateString('ru-RU')}</span></div>${orders ? `<div class="order-list">${orders}</div>` : ''}`;
+  const orders = (state.donationOrders || []).map(order => renderDonationOrder(order)).join('');
+  byId('account-content').innerHTML = `<div class="profile-strip"><strong>${escapeHtml(state.user.username)}</strong><span class="profile-role">${escapeHtml(roleLabel(state.user.role))}</span><span class="profile-stat">С нами с ${new Date(state.user.createdAt).toLocaleDateString('ru-RU')}</span></div>${orders ? `<div class="donation-order-list">${orders}</div>` : ''}`;
   adminArea.hidden = !['developer', 'admin'].includes(state.user.role);
 }
 
@@ -114,8 +122,8 @@ async function loadAdmin() {
   const customStatus = status.type === 'custom' ? status.value : '';
   const donationSettings = admin.donationSettings || { accepting: false, issuing: false };
   const packageRows = admin.packages.map((item, index) => `<div class="donation-admin-package" data-package-row="${escapeHtml(item.id)}" data-accent="${escapeHtml(item.accent || 'mint')}"><span class="package-label">СТАТУС / 0${index + 1}</span><input class="admin-input" data-package-field="name" aria-label="Название тарифа" maxlength="40" value="${escapeHtml(item.name)}"><input class="admin-input" data-package-field="price" aria-label="Цена тарифа" type="number" min="0" max="1000000" value="${Number(item.price)}"><input class="admin-input" data-package-field="description" aria-label="Описание тарифа" maxlength="120" value="${escapeHtml(item.description || '')}"><input class="admin-input" data-package-field="perks" aria-label="Преимущества через точку с запятой" maxlength="300" value="${escapeHtml((item.perks || []).join('; '))}"><button class="text-button" type="button" data-package-remove="${escapeHtml(item.id)}">Удалить тариф</button></div>`).join('');
-  const pendingOrders = (admin.orders || []).filter(order => order.status === 'pending');
-  const orderRows = pendingOrders.length ? pendingOrders.map(order => `<div class="admin-row"><span>${escapeHtml(order.username)} · ${escapeHtml(order.packageName)}<small>${Number(order.amount)} ₽ · ${new Date(order.createdAt).toLocaleDateString('ru-RU')}</small></span><button type="button" data-donation-issue="${escapeHtml(order.id)}" ${donationSettings.issuing ? '' : 'disabled'}>${donationSettings.issuing ? 'Подтвердить оплату и выдать' : 'Выдача закрыта'}</button></div>`).join('') : '<div class="empty-state">Ожидающих заявок нет.</div>';
+  const donationOrders = (admin.orders || []).slice(0, 100);
+  const orderRows = donationOrders.length ? donationOrders.map(order => renderDonationOrder(order, true, donationSettings.issuing)).join('') : '<div class="empty-state">Заявок пока нет.</div>';
   byId('admin-content').innerHTML = `<div class="admin-grid admin-grid-compact"><section class="admin-panel"><h3>Статус сервера</h3><label class="admin-label" for="server-status-select">Выбрать статус</label><select class="admin-input" id="server-status-select"><option value="maintenance" ${selectedStatus === 'maintenance' ? 'selected' : ''}>Тех-Работы</option><option value="offline" ${selectedStatus === 'offline' ? 'selected' : ''}>Оффлайн</option><option value="online" ${selectedStatus === 'online' ? 'selected' : ''}>Онлайн</option><option value="development" ${selectedStatus === 'development' ? 'selected' : ''}>В разработке</option><option value="custom" ${selectedStatus === 'custom' ? 'selected' : ''}>Свой статус</option></select><input class="admin-input custom-status-input" id="custom-server-status" type="text" maxlength="40" placeholder="Например: Скоро открытие" value="${escapeHtml(customStatus)}" ${selectedStatus !== 'custom' ? 'hidden' : ''}></section><section class="admin-panel"><h3>Правила проекта</h3><label class="admin-label" for="project-rules-input">Текст правил</label><textarea class="admin-input rules-editor" id="project-rules-input" maxlength="12000" rows="7">${escapeHtml(admin.rules || 'В разработке')}</textarea><button class="button button-primary admin-save" id="save-project-settings" type="button">Сохранить настройки</button></section><section class="admin-panel donation-admin"><h3>Донат: приём и выдача</h3><label class="admin-toggle"><input id="donation-accept-toggle" type="checkbox" ${donationSettings.accepting ? 'checked' : ''}><span>Приём заявок открыт</span></label><label class="admin-toggle"><input id="donation-issue-toggle" type="checkbox" ${donationSettings.issuing ? 'checked' : ''}><span>Выдача статусов открыта</span></label><button class="button button-primary admin-save" id="save-donation-settings" type="button">Сохранить переключатели</button><p class="admin-note">Оплату проверь вручную до подтверждения выдачи. Карточные данные сайт не принимает.</p></section><section class="admin-panel donation-admin"><h3>Тарифы доната</h3><div class="donation-admin-packages" id="donation-admin-packages">${packageRows}</div><button class="button button-quiet admin-save" id="add-donation-package" type="button">Добавить тариф +</button><button class="button button-primary admin-save" id="save-donation-packages" type="button">Сохранить тарифы</button></section><section class="admin-panel donation-admin"><h3>Заявки на донат</h3><div class="admin-list">${orderRows}</div></section><section class="admin-panel"><h3>Доступ администраторов</h3><div class="admin-list">${users || '<div class="empty-state">Аккаунтов пока нет.</div>'}</div><p class="admin-note">Новый администратор должен сначала зарегистрировать аккаунт на сайте.</p></section><section class="admin-panel"><h3>Память проекта</h3><div class="admin-row"><span>Аккаунты<small>Сохранены в постоянном хранилище</small></span><strong>${admin.users.length}</strong></div><div class="admin-row"><span>Файл данных<small>data/site-data.json</small></span><strong>OK</strong></div></section></div>`;
 }
 
@@ -124,6 +132,23 @@ async function refreshState() {
   renderProjectSettings();
   renderAccount();
   if (state.user && ['developer', 'admin'].includes(state.user.role)) await loadAdmin();
+}
+
+async function openDonationChat(orderId) {
+  const chat = byId(`donation-chat-${orderId}`);
+  if (!chat) return;
+  chat.hidden = false;
+  chat.innerHTML = '<div class="chat-loading">Загружаем переписку…</div>';
+  try {
+    const result = await api(`/api/donations/${encodeURIComponent(orderId)}/messages`);
+    const messages = result.messages || [];
+    const messageList = messages.length ? messages.map(message => `<article class="chat-message" data-sender="${message.senderRole === 'admin' ? 'admin' : 'buyer'}"><header>${escapeHtml(message.senderName)} · ${new Date(message.createdAt).toLocaleString('ru-RU')}</header><p>${escapeHtml(message.text)}</p></article>`).join('') : '<div class="chat-empty">Начни переписку с администрацией.</div>';
+    chat.innerHTML = `<div class="donation-chat-messages">${messageList}</div><div class="donation-chat-compose"><textarea data-chat-input="${escapeHtml(orderId)}" maxlength="2000" rows="2" placeholder="Напиши сообщение…"></textarea><div><button class="text-button" type="button" data-chat-refresh="${escapeHtml(orderId)}">Обновить</button><button class="button button-primary" type="button" data-chat-send="${escapeHtml(orderId)}">Отправить</button></div></div>`;
+    const list = chat.querySelector('.donation-chat-messages');
+    list.scrollTop = list.scrollHeight;
+  } catch (error) {
+    chat.innerHTML = `<div class="chat-error">${escapeHtml(error.message)}</div>`;
+  }
 }
 
 function openModal() {
@@ -172,6 +197,12 @@ byId('account-trigger').addEventListener('click', openModal);
 byId('modal-close').addEventListener('click', closeModal);
 modal.addEventListener('click', event => { if (event.target === modal) closeModal(); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && modal.classList.contains('is-open')) closeModal(); });
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Enter' || event.shiftKey || !event.target.matches('[data-chat-input]')) return;
+  event.preventDefault();
+  const orderId = event.target.dataset.chatInput;
+  document.querySelector(`[data-chat-send="${CSS.escape(orderId)}"]`)?.click();
+});
 document.querySelectorAll('.auth-tab').forEach(tab => tab.addEventListener('click', () => setAuthMode(tab.dataset.mode)));
 
 authForm.addEventListener('submit', async event => {
@@ -205,6 +236,33 @@ document.addEventListener('click', async event => {
       await navigator.clipboard.writeText(copyButton.dataset.copy);
       showToast('Адрес heliworld.mcsh.gg скопирован');
     } catch { showToast('Адрес сервера: heliworld.mcsh.gg'); }
+    return;
+  }
+  const chatToggle = event.target.closest('[data-chat-toggle]');
+  if (chatToggle) {
+    const orderId = chatToggle.dataset.chatToggle;
+    const chat = byId(`donation-chat-${orderId}`);
+    if (chat.hidden) await openDonationChat(orderId);
+    else chat.hidden = true;
+    return;
+  }
+  const chatRefresh = event.target.closest('[data-chat-refresh]');
+  if (chatRefresh) {
+    await openDonationChat(chatRefresh.dataset.chatRefresh);
+    return;
+  }
+  const chatSend = event.target.closest('[data-chat-send]');
+  if (chatSend) {
+    const orderId = chatSend.dataset.chatSend;
+    const input = document.querySelector(`[data-chat-input="${CSS.escape(orderId)}"]`);
+    const message = input.value.trim();
+    if (!message) return;
+    chatSend.disabled = true;
+    try {
+      await api(`/api/donations/${encodeURIComponent(orderId)}/messages`, { method: 'POST', body: JSON.stringify({ message }) });
+      await openDonationChat(orderId);
+    } catch (error) { showToast(error.message); }
+    finally { chatSend.disabled = false; }
     return;
   }
   const donationButton = event.target.closest('[data-donation-package]');

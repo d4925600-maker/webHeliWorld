@@ -185,6 +185,33 @@ async function handleApi(request, response, url) {
     return sendJson(response, 201, { order });
   }
 
+  const donationMessagesMatch = route.match(/^\/api\/donations\/([0-9a-f-]+)\/messages$/i);
+  if (donationMessagesMatch && ['GET', 'POST'].includes(request.method)) {
+    if (!user) return sendJson(response, 401, { error: 'Войди, чтобы открыть переписку.' });
+    const order = data.orders.find(entry => entry.id === donationMessagesMatch[1]);
+    if (!order) return sendJson(response, 404, { error: 'Заявка не найдена.' });
+    if (order.userId !== user.id && !isAdmin(user)) return sendJson(response, 403, { error: 'Эта переписка доступна только покупателю и администрации.' });
+    if (request.method === 'GET') {
+      return sendJson(response, 200, { messages: order.messages || [] });
+    }
+    const body = await readBody(request);
+    const text = typeof body.message === 'string' ? body.message.trim() : '';
+    if (!text || text.length > 2000) return sendJson(response, 400, { error: 'Сообщение должно содержать от 1 до 2 000 символов.' });
+    order.messages ||= [];
+    if (order.messages.length >= 500) return sendJson(response, 409, { error: 'В этой переписке достигнут лимит сообщений.' });
+    const message = {
+      id: crypto.randomUUID(),
+      senderId: user.id,
+      senderName: user.username,
+      senderRole: isAdmin(user) ? 'admin' : 'buyer',
+      text,
+      createdAt: new Date().toISOString()
+    };
+    order.messages.push(message);
+    await saveData(data);
+    return sendJson(response, 201, { message });
+  }
+
   if (!route.startsWith('/api/admin/')) return sendJson(response, 404, { error: 'Маршрут не найден.' });
   if (!isAdmin(user)) return sendJson(response, 403, { error: 'Доступ только для администраторов.' });
 
