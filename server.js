@@ -11,10 +11,15 @@ const dataDir = path.join(root, 'data');
 const dataFile = path.join(dataDir, 'site-data.json');
 const sessions = new Map();
 const loginAttempts = new Map();
-const mimeTypes = { '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml' };
+const mimeTypes = { '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.svg': 'image/svg+xml' };
 const serverStatusPresets = new Set(['maintenance', 'offline', 'online', 'development']);
 const defaultServerStatus = { type: 'preset', value: 'development' };
 const defaultRules = 'В разработке';
+const defaultDonationSettings = { accepting: false, issuing: false };
+const defaultDonationPackages = [
+  { id: 'scout', name: 'Путник', price: 99, description: 'Первый шаг в большую политику', perks: ['Цветной префикс', 'Особый набор эмодзи'], accent: 'mint' },
+  { id: 'mayor', name: 'Градоначальник', price: 249, description: 'Для тех, кто строит города', perks: ['Дополнительные слоты города'], accent: 'blue' }
+];
 
 function loadEnv() {
   const file = path.join(root, '.env');
@@ -40,6 +45,9 @@ async function readData() {
     const data = JSON.parse(await fs.promises.readFile(dataFile, 'utf8'));
     data.serverStatus ||= defaultServerStatus;
     data.rules ||= defaultRules;
+    data.packages ||= defaultDonationPackages;
+    data.donationSettings ||= defaultDonationSettings;
+    data.orders ||= [];
     return data;
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
@@ -51,7 +59,10 @@ async function readData() {
     const data = {
       users: [{ id: crypto.randomUUID(), username, salt, passwordHash, role: 'developer', rank: 'Разработчик', createdAt: new Date().toISOString() }],
       serverStatus: defaultServerStatus,
-      rules: defaultRules
+      rules: defaultRules,
+      packages: defaultDonationPackages,
+      donationSettings: defaultDonationSettings,
+      orders: []
     };
     await saveData(data);
     return data;
@@ -110,7 +121,10 @@ async function handleApi(request, response, url) {
     return sendJson(response, 200, {
       user: user ? safeUser(user) : null,
       serverStatus: data.serverStatus || defaultServerStatus,
-      rules: data.rules || defaultRules
+      rules: data.rules || defaultRules,
+      donationPackages: data.packages || defaultDonationPackages,
+      donationSettings: data.donationSettings || defaultDonationSettings,
+      donationOrders: user ? data.orders.filter(order => order.userId === user.id) : []
     });
   }
 
@@ -155,6 +169,22 @@ async function handleApi(request, response, url) {
     return sendJson(response, 200, { ok: true }, { 'Set-Cookie': 'heli_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0' });
   }
 
+  if (route === '/api/donations' && request.method === 'POST') {
+    if (!user) return sendJson(response, 401, { error: 'Войди или зарегистрируйся, чтобы оставить заявку.' });
+    if (!data.donationSettings?.accepting) return sendJson(response, 409, { error: 'Приём заявок на донат сейчас закрыт.' });
+    const body = await readBody(request);
+    const item = (data.packages || []).find(entry => entry.id === body.packageId);
+    if (!item) return sendJson(response, 404, { error: 'Этот статус больше недоступен.' });
+    const order = {
+      id: crypto.randomUUID(), userId: user.id, username: user.username,
+      packageId: item.id, packageName: item.name, amount: item.price,
+      status: 'pending', createdAt: new Date().toISOString()
+    };
+    data.orders.unshift(order);
+    await saveData(data);
+    return sendJson(response, 201, { order });
+  }
+
   if (!route.startsWith('/api/admin/')) return sendJson(response, 404, { error: 'Маршрут не найден.' });
   if (!isAdmin(user)) return sendJson(response, 403, { error: 'Доступ только для администраторов.' });
 
@@ -162,8 +192,62 @@ async function handleApi(request, response, url) {
     return sendJson(response, 200, {
       users: data.users.map(safeUser),
       serverStatus: data.serverStatus || defaultServerStatus,
-      rules: data.rules || defaultRules
+      rules: data.rules || defaultRules,
+      donationSettings: data.donationSettings || defaultDonationSettings,
+      packages: data.packages || defaultDonationPackages,
+      orders: data.orders || []
     });
+  }
+
+  if (route === '/api/admin/donations/settings' && request.method === 'PUT') {
+    const body = await readBody(request);
+    if (typeof body.accepting !== 'boolean' || typeof body.issuing !== 'boolean') {
+      return sendJson(response, 400, { error: 'Укажи состояние приёма заявок и выдачи статусов.' });
+    }
+    data.donationSettings = { accepting: body.accepting, issuing: body.issuing };
+    await saveData(data);
+    return sendJson(response, 200, { donationSettings: data.donationSettings });
+  }
+
+  if (route === '/api/admin/donations/packages' && request.method === 'PUT') {
+    const body = await readBody(request);
+    if (!Array.isArray(body.packages) || body.packages.length < 1 || body.packages.length > 12) {
+      return sendJson(response, 400, { error: 'Добавь от одного до двенадцати статусов.' });
+    }
+    const ids = new Set();
+    const packages = [];
+    for (const entry of body.packages) {
+      if (!/^[a-z0-9_-]{1,32}$/.test(entry.id) || ids.has(entry.id) || typeof entry.name !== 'string' || !entry.name.trim() || entry.name.length > 40 || !Number.isInteger(Number(entry.price)) || Number(entry.price) < 0 || Number(entry.price) > 1_000_000) {
+        return sendJson(response, 400, { error: 'Проверь уникальный ID, название и цену каждого статуса.' });
+      }
+      ids.add(entry.id);
+      packages.push({
+        id: entry.id,
+        name: entry.name.trim(),
+        price: Number(entry.price),
+        description: String(entry.description || '').slice(0, 120),
+        perks: Array.isArray(entry.perks) ? entry.perks.slice(0, 5).map(perk => String(perk).slice(0, 60)) : [],
+        accent: ['mint', 'blue', 'gold'].includes(entry.accent) ? entry.accent : 'mint'
+      });
+    }
+    data.packages = packages;
+    await saveData(data);
+    return sendJson(response, 200, { packages: data.packages });
+  }
+
+  const donationOrderMatch = route.match(/^\/api\/admin\/donations\/orders\/([0-9a-f-]+)\/issue$/i);
+  if (donationOrderMatch && request.method === 'POST') {
+    if (!data.donationSettings?.issuing) return sendJson(response, 409, { error: 'Выдача донат-статусов закрыта.' });
+    const order = data.orders.find(entry => entry.id === donationOrderMatch[1]);
+    if (!order || order.status !== 'pending') return sendJson(response, 404, { error: 'Заявка не найдена или уже обработана.' });
+    const target = data.users.find(account => account.id === order.userId);
+    if (!target) return sendJson(response, 404, { error: 'Аккаунт игрока не найден.' });
+    order.status = 'completed';
+    order.approvedBy = user.username;
+    order.issuedAt = new Date().toISOString();
+    target.rank = order.packageName;
+    await saveData(data);
+    return sendJson(response, 200, { order, user: safeUser(target) });
   }
 
   if (route === '/api/admin/settings' && request.method === 'PUT') {
